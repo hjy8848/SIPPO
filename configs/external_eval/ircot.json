@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "protocol_id": "MTCP-20260923-v2-ircot-controlled",
+  "baseline": "ircot",
+  "official_repo": "https://github.com/StonyBrookNLP/ircot",
+  "prompt_family": "ircot",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 6,
+  "max_retrieval_calls": 5,
+  "max_tokens": 256,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "repetition_penalty": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": ["</think>", " </think>", "</answer>", " </answer>"],
+  "continuation": "{output_text}<|im_end|>\n<|im_start|>user\n<information>{search_results}</information>\nContinue with one new reasoning sentence or the final answer.<|im_end|>\n<|im_start|>assistant\n",
+  "adapter_note": "Controlled IRCoT-style adaptation: up to five sentence-level retrieval rounds with three Wiki18/E5 passages per round, followed by an explicit final-answer turn. This matches a 15-passage budget; the upstream paper used model-specific prompts and BM25 top-6, so this is not an exact native reproduction.",
+  "final_answer_continuation": "{output_text}<|im_end|>\\n<|im_start|>user\\nThe retrieval budget is exhausted. Do not continue reasoning or search. Synthesize the question and all retrieved passages, then return only a concise final answer inside <answer>...</answer>.<|im_end|>\\n<|im_start|>assistant\\n"
+}

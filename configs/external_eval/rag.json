@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "protocol_id": "MTCP-20260923-v1-rag",
+  "baseline": "rag",
+  "official_paper": "Lewis et al., 2020",
+  "prompt_family": "rag",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 1,
+  "max_tokens": 1024,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "repetition_penalty": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": ["</answer>", " </answer>"],
+  "continuation": "",
+  "adapter_note": "Controlled single-shot RAG with Qwen2.5-3B-Instruct and the pinned Wiki18/E5 top-3 retriever."
+}

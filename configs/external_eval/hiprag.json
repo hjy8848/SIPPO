@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "baseline": "hiprag",
+  "official_repo": "https://github.com/qualidea1217/HiPRAG",
+  "prompt_family": "hiprag_short",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 10,
+  "max_tokens": 1024,
+  "temperature": 0.7,
+  "top_p": null,
+  "include_stop_str_in_output": true,
+  "stop": [
+    "</search>",
+    " </search>",
+    "</search>\n",
+    " </search>\n",
+    "</search>\n\n",
+    " </search>\n\n",
+    "</answer>",
+    " </answer>",
+    "</answer>\n",
+    " </answer>\n"
+  ],
+  "continuation": "\n    <context>{search_results}</context>\n    <conclusion>",
+  "continue_without_search": true,
+  "no_search_continuation": "\n    <conclusion>"
+}

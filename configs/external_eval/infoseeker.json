@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "baseline": "infoseeker",
+  "official_repo": "https://github.com/Memento-Teams/InfoSeeker",
+  "official_model_card": "https://huggingface.co/shreyess/infoseeker-4b",
+  "official_eval_entrypoint": "evaluate/evaluate_wide/run_benchmark.py -> evaluate/evaluate_wide/run_evaluation.py",
+  "prompt_family": "infoseeker_host_agent",
+  "evaluation_mode": "contextual_native",
+  "native_benchmarks": ["WideSearch", "BrowseComp-ZH"],
+  "target_four_dataset_compatible": false,
+  "jade_full_answerable_compatible": false,
+  "retriever_path": null,
+  "required_runtime": [
+    "HostAgent/LangChain orchestration",
+    "MCP tool runtime",
+    "Firecrawl or equivalent online web access",
+    "OpenAI-compatible model endpoint and API key"
+  ],
+  "adapter_status": "not_implemented_by_design",
+  "protocol_note": "The released InfoSeeker evaluation is an online web-research benchmark, not a Wiki18 top-k retrieval loop. Substituting the JADE Wiki18 retriever or the 22,517-row four-dataset manifest would change the task and must not be reported as an InfoSeeker reproduction.",
+  "blocking_reason": "No scientifically faithful mapping from WideSearch/BrowseComp-ZH HostAgent trajectories to the frozen JADE four-dataset contract has been established.",
+  "do_not_use_shared_runner": true
+}

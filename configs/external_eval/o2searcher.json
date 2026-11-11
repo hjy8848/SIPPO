@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "baseline": "o2searcher",
+  "official_repo": "https://github.com/KnowledgeXLab/O2-Searcher",
+  "official_eval_entrypoint": "scripts/eval/infer_agent.py -a closedended",
+  "official_model": "Jianbiao/O2-Searcher-Qwen2.5-3B-GRPO",
+  "prompt_family": "o2_searcher",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 5,
+  "max_context_len": 8192,
+  "max_tokens": 2048,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": ["</search>", " </search>", "</answer>", " </answer>"],
+  "continuation": "<|im_end|>\n<|im_start|>user\nSearch learnings: <learnings>{search_results}</learnings>.\n<|im_end|>\n<|im_start|>assistant\n",
+  "continue_without_search": false,
+  "protocol_note": "Official O2-Searcher closed-ended protocol: system prompt, Initial query framing, one-to-five <query> items inside <search>, five-step agent loop, and <learnings> continuation are preserved. The only boundary adapter is the shared Wiki18 retriever endpoint: its /retrieve response is rendered as the learning text consumed by the official continuation prompt."
+}

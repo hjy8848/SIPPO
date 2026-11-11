@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "baseline": "search_r1",
+  "official_repo": "https://github.com/PeterGriffinJin/Search-R1",
+  "prompt_family": "search_r1",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 32,
+  "max_tokens": 1024,
+  "temperature": 0.7,
+  "top_p": null,
+  "include_stop_str_in_output": true,
+  "stop": [
+    "</search>",
+    " </search>",
+    "</search>\n",
+    " </search>\n",
+    "</search>\n\n",
+    " </search>\n\n",
+    "</answer>",
+    " </answer>",
+    "</answer>\n",
+    " </answer>\n"
+  ],
+  "continuation": "\n\n{output_text}<information>{search_results}</information>\n\n",
+  "continue_without_search": false
+}

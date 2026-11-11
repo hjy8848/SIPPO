@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "baseline": "opd",
+  "official_repo": "https://github.com/BaohaoLiao/ReOPD",
+  "official_eval_entrypoint": "scripts/eval/search.sh -> eval/search/eval.py",
+  "prompt_family": "search_r1_tool",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 4,
+  "max_context_len": 8192,
+  "max_tokens": 8192,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": ["</tool_call>", " </tool_call>", "</answer>", " </answer>"],
+  "continuation": "{output_text}<|im_end|>\n<|im_start|>user\n<tool_response>\n{search_results}\n</tool_response><|im_end|>\n<|im_start|>assistant\n",
+  "continue_without_search": false,
+  "protocol_note": "Native OPD Search-R1 tool-call format; four live student turns per sample. Controlled JADE run substitutes the pinned Wiki18 retriever for the upstream local retriever while preserving tool tags."
+}

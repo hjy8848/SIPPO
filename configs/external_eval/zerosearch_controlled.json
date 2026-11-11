@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "protocol_id": "MTCP-20260917-v1-zerosearch",
+  "baseline": "zerosearch",
+  "official_repo": "https://github.com/Alibaba-NLP/ZeroSearch",
+  "prompt_family": "zerosearch",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 32,
+  "max_tokens": 1024,
+  "temperature": 0.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "repetition_penalty": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": [
+    "</search>",
+    " </search>",
+    "</search>\n",
+    " </search>\n",
+    "</search>\n\n",
+    " </search>\n\n",
+    "</answer>",
+    " </answer>",
+    "</answer>\n",
+    " </answer>\n"
+  ],
+  "continuation": "\n\n{output_text}<information>{search_results}</information>\n\n",
+  "continue_without_search": false,
+  "adapter_note": "Controlled main-table evaluation: official ZeroSearch prompt/controller with the pinned JADE Wiki18/E5 retriever and its Search-R1-shaped request/response adapter; native simulator results are separate."
+}

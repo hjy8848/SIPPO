@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "baseline": "autorefine_instruct",
+  "official_repo": "https://github.com/syr-cn/AutoRefine",
+  "official_eval_entrypoint": "cmd/eval.sh",
+  "official_model": "yrshi/AutoRefine-Qwen2.5-3B-Instruct",
+  "prompt_family": "autorefine",
+  "retriever_path": "/retrieve",
+  "retrieval_format": "search_r1",
+  "retrieval_topk": 3,
+  "max_turns": 3,
+  "max_context_len": 6656,
+  "max_tokens": 512,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "include_stop_str_in_output": true,
+  "stop": ["</search>", " </search>", "</search>\n", " </search>\n", "</search>\n\n", " </search>\n\n"],
+  "continuation": "\n\n{output_text}<documents>{search_results}</documents>\n\n",
+  "continue_without_search": false,
+  "protocol_note": "Official AutoRefine evaluation protocol: native search/refine prompt, three validation turns, top-3 Wiki18 retrieval, temperature 1, and the official documents continuation are preserved. The checkpoint is changed only by model path between Instruct and Base rows."
+}
