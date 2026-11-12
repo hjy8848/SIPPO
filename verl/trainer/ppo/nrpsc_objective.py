@@ -34,7 +34,8 @@ _WORD = re.compile(r'[a-z0-9]+')
 def optional_psc_metadata(metadata) -> list[str]:
     """Retain optional rollout metadata when constructing actor minibatches."""
     keys = ("psc_chosen_eligible", "contract_valid", "runtime_lineage_valid",
-            "answer_sink_supported", "outcome_reward", "workflow_valid")
+            "answer_sink_supported", "outcome_reward", "workflow_valid",
+            "nrpsc_tiebreak_usable", "nrpsc_tiebreak_hit")
     return [key for key in keys if key in metadata]
 
 
@@ -226,6 +227,12 @@ class PlanObservation:
     successes: int
     trials: int
     eligible: bool = True
+    # Optional secondary outcome (e.g. "did any retrieved document contain the gold answer?"), used only to break
+    # a tie in the primary (EM) class comparison in `construct_node_pairs`. None means "not available for this
+    # row" (binary-answer questions, or questions where the answer string cannot be checked against retrieval);
+    # such rows never contribute to the tie-break, the same as if tie-break were disabled for that comparison.
+    secondary_successes: int | None = None
+    secondary_trials: int | None = None
 
 
 def cluster_plan_observations(members: list[PlanObservation], similarity, threshold: float):
@@ -278,23 +285,37 @@ def select_replay_rows(observations: list[PlanObservation], similarity, threshol
 
 
 def construct_node_pairs(observations: list[PlanObservation], similarity, threshold: float,
-                         reliability=None) -> tuple[list[PreferencePair], dict]:
+                         reliability=None, *, tiebreak_weight: float = 0.0) -> tuple[list[PreferencePair], dict]:
     """Group fully aligned plans by complete linkage and build class-level pairs.
 
     `successes`/`trials` must describe independently executed terminal-EM
     outcomes of that specific plan. `reliability`, if provided, maps
     (winner_successes, winner_trials, loser_successes, loser_trials) to a
     pre-calibrated bounded weight. No model or reward is fit here.
+
+    `tiebreak_weight` (default 0.0, i.e. off: identical behaviour and counts to the original function) scales a
+    class pair whose EM success rates tie exactly but whose ``secondary_successes``/``secondary_trials`` differ.
+    This never overrides an EM difference, never fires on a class with no secondary data, and is a separate,
+    independently tunable weight from the main NR-PSC loss weight -- it adds coverage on EM-tied comparisons
+    (most visibly the all-fail questions where EM gives no signal at all) without rescaling the EM-based pairs.
     """
+    if tiebreak_weight < 0 or not math.isfinite(tiebreak_weight):
+        raise ValueError("invalid tiebreak_weight")
     questions = {}
     for obs in observations:
         if obs.trials < 1 or not 0 <= obs.successes <= obs.trials:
             raise ValueError("invalid terminal EM execution counts")
+        if obs.secondary_trials is not None and (
+            obs.secondary_trials < 1 or obs.secondary_successes is None
+            or not 0 <= obs.secondary_successes <= obs.secondary_trials
+        ):
+            raise ValueError("invalid secondary execution counts")
         if obs.eligible:
             questions.setdefault(obs.question, []).append(obs)
     result = []
     counts = {"questions": len(questions), "classes": 0, "same_class_members": 0,
-              "class_pairs": 0, "informative_class_pairs": 0, "G": 0, "S": 0, "N": 0,
+              "class_pairs": 0, "informative_class_pairs": 0, "em_informative_class_pairs": 0,
+              "tiebreak_informative_class_pairs": 0, "G": 0, "S": 0, "N": 0,
               "candidate_counts": {}}
     for question, members in questions.items():
         classes = cluster_plan_observations(members, similarity, threshold)
@@ -307,17 +328,31 @@ def construct_node_pairs(observations: list[PlanObservation], similarity, thresh
                 counts["class_pairs"] += 1
                 ls, ln = sum(x.successes for x in left), sum(x.trials for x in left)
                 rs, rn = sum(x.successes for x in right), sum(x.trials for x in right)
+                via_tiebreak = False
                 if ls * rn == rs * ln:
-                    continue
+                    if tiebreak_weight <= 0:
+                        continue
+                    sec_left = [x for x in left if x.secondary_trials is not None]
+                    sec_right = [x for x in right if x.secondary_trials is not None]
+                    if not sec_left or not sec_right:
+                        continue
+                    ls, ln = sum(x.secondary_successes for x in sec_left), sum(x.secondary_trials for x in sec_left)
+                    rs, rn = sum(x.secondary_successes for x in sec_right), sum(x.secondary_trials for x in sec_right)
+                    if ls * rn == rs * ln:
+                        continue
+                    via_tiebreak = True
                 winner, loser, ws, wn, ls, ln = ((left, right, ls, ln, rs, rn)
                                                 if ls * rn > rs * ln
                                                 else (right, left, rs, rn, ls, ln))
                 weight = 1.0 if reliability is None else float(reliability(ws, wn, ls, ln))
                 if not 0 <= weight <= 1 or not math.isfinite(weight):
                     raise ValueError("invalid reliability weight")
+                if via_tiebreak:
+                    weight *= tiebreak_weight
                 if weight == 0:
                     continue
                 counts["informative_class_pairs"] += 1
+                counts["tiebreak_informative_class_pairs" if via_tiebreak else "em_informative_class_pairs"] += 1
                 for win in winner:
                     for lose in loser:
                         comparison = compare_plans(win.view, lose.view, similarity, threshold)
@@ -560,7 +595,8 @@ def node_preference_coefficients(log_probs: torch.Tensor, pairs: list[Preference
 
 def batch_node_coefficients(log_probs: torch.Tensor, response_mask: torch.Tensor,
                             observations: list[PlanObservation], similarity, threshold: float,
-                            *, question_count: int, beta: float = 1.0, reliability=None):
+                            *, question_count: int, beta: float = 1.0, reliability=None,
+                            tiebreak_weight: float = 0.0):
     """Build full response-token coefficients from pre-aligned Planner observations.
 
     Each observation must name a unique valid actor row. Batch padding and
@@ -571,7 +607,8 @@ def batch_node_coefficients(log_probs: torch.Tensor, response_mask: torch.Tensor
     rows = [obs.row for obs in observations]
     if len(set(rows)) != len(rows):
         raise ValueError("duplicate planner rows require explicit normalization")
-    pairs, counts = construct_node_pairs(observations, similarity, threshold, reliability)
+    pairs, counts = construct_node_pairs(observations, similarity, threshold, reliability,
+                                         tiebreak_weight=tiebreak_weight)
     def padded(row, nodes):
         if not 0 <= row < len(log_probs):
             raise ValueError("planner row outside batch")

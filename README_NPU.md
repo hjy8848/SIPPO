@@ -1,4 +1,4 @@
-# SIPPO on Ascend NPU (verl 0.9.1 base)
+﻿# SIPPO on Ascend NPU (verl 0.9.1 base)
 
 This branch holds the NPU-native port of SIPPO/JADE: verl 0.9.1 plus the SIPPO workflow-RLOO / PSC / NR-PSC algorithm files.
 It is a separate tree from `main` (the GPU snapshot); entry point is `python -m sippo.main <hydra overrides>`.

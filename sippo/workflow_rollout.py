@@ -149,6 +149,30 @@ def count_answer_hits(docs, answer):
             hits += 1
     return hits
 
+def nrpsc_tiebreak_signal(question, answer, intermediate_results):
+    """NR-PSC tie-break signal: did any document retrieved anywhere in this workflow contain a gold answer string?
+
+    Returns ``(usable, hit)``. ``usable`` is False (and ``hit`` meaningless) for yes/no answers, where "retrieved"
+    is not a meaningful check, and for answers that are themselves a substring of the question (the check would be
+    trivially satisfied by the question text alone, not by anything the Planner's search actually found). This is
+    a *secondary* signal: it only ever breaks a class-comparison tie on the primary EM outcome, so a question the
+    EM comparison already decides is unaffected regardless of this function's result.
+    """
+    if is_binary_answer(answer):
+        return False, False
+    candidates = [normalize_answer(candidate) for candidate in flatten_answer_candidates(answer)
+                  if str(candidate).strip()]
+    candidates = [candidate for candidate in candidates if candidate]
+    if not candidates:
+        return False, False
+    normalized_question = normalize_answer(str(question))
+    if any(candidate in normalized_question for candidate in candidates):
+        return False, False
+    docs = []
+    for info in intermediate_results.values():
+        docs.extend(info.get("docs") or [])
+    return True, count_answer_hits(docs, answer) > 0
+
 def compute_response_mask(data: DataProto):
     """Compute the attention mask for the response part of the sequence.
 
@@ -1481,6 +1505,11 @@ class WorkflowRolloutMixin:
                 data.non_tensor_batch['outcome_exact'] = np.zeros(row_count, dtype=np.float32)
                 data.non_tensor_batch['outcome_grounded'] = np.zeros(row_count, dtype=np.bool_)
                 data.non_tensor_batch['workflow_valid'] = np.zeros(row_count, dtype=np.bool_)
+                # Must be present on every row regardless of path, like the fields above: DataProto.concat requires
+                # identical non_tensor_batch keys across all workflows in a batch. "usable=False" here is correct,
+                # not a placeholder: this early-return path never ran the retrieval check this flag reports on.
+                data.non_tensor_batch['nrpsc_tiebreak_usable'] = np.zeros(row_count, dtype=np.bool_)
+                data.non_tensor_batch['nrpsc_tiebreak_hit'] = np.zeros(row_count, dtype=np.bool_)
                 if contract_enabled:
                     data.non_tensor_batch['contract_valid'] = np.zeros(row_count, dtype=np.bool_)
                     data.non_tensor_batch['runtime_lineage_valid'] = np.zeros(row_count, dtype=np.bool_)
@@ -2274,6 +2303,9 @@ class WorkflowRolloutMixin:
         final_scores = compute_scores([final_ans], [flatten_answer_candidates(answer) or [""]])
         final_reward = compute_final_answer_reward(final_ans, answer, em_weight=final_reward_em_weight)
         final_is_grounded = is_supported_answer(final_ans, context["conclusions"])
+        nrpsc_tiebreak_usable, nrpsc_tiebreak_hit = nrpsc_tiebreak_signal(
+            question, answer, context["intermediate_results"]
+        )
         contract_valid = bool(planning_is_valid) if contract_enabled else True
         runtime_lineage_valid = (
             bool(context.get("runtime_lineage_valid", False))
@@ -2382,6 +2414,12 @@ class WorkflowRolloutMixin:
             item[0].non_tensor_batch['outcome_grounded'] = np.full(row_count, final_is_grounded, dtype=np.bool_)
             item[0].non_tensor_batch['workflow_valid'] = np.full(
                 row_count, not context["has_invalid_action"], dtype=np.bool_
+            )
+            item[0].non_tensor_batch['nrpsc_tiebreak_usable'] = np.full(
+                row_count, nrpsc_tiebreak_usable, dtype=np.bool_
+            )
+            item[0].non_tensor_batch['nrpsc_tiebreak_hit'] = np.full(
+                row_count, nrpsc_tiebreak_hit, dtype=np.bool_
             )
             if contract_enabled:
                 item[0].non_tensor_batch['contract_valid'] = np.full(
@@ -3724,6 +3762,11 @@ class WorkflowRolloutMixin:
                 metrics.update({f"aux/nrpsc/{key}": float(value)
                                 for key, value in alignment_counts.items()})
                 metrics["aux/nrpsc/complete_sibling_questions"] = float(sibling_questions)
+                tiebreak_usable = np.asarray(batch.non_tensor_batch.get(
+                    "nrpsc_tiebreak_usable", np.zeros(len(views), dtype=np.bool_)))
+                tiebreak_hit = np.asarray(batch.non_tensor_batch.get(
+                    "nrpsc_tiebreak_hit", np.zeros(len(views), dtype=np.bool_)))
+                metrics["aux/nrpsc/tiebreak_usable_rows"] = float((tiebreak_usable & (views != None)).sum())  # noqa: E711
             if mode not in {"off", "nrpsc"}:
                 initial = build_planner_outcome_contrast_coefficients(
                     response_mask=batch.batch["response_mask"],
@@ -3807,6 +3850,7 @@ class WorkflowRolloutMixin:
                     "nrpsc_unknown_idf": nrpsc_scorer.unknown_idf if mode == "nrpsc" else None,
                     "nrpsc_similarity_threshold": float(cfg.get("nrpsc_similarity_threshold", 0.8)),
                     "nrpsc_reliability_table": dict(cfg.get("nrpsc_reliability_table", {}) or {}),
+                    "nrpsc_tiebreak_weight": float(cfg.get("nrpsc_tiebreak_weight", 0.0)),
                     "planner_outcome_contrast_loss_weight": loss_weight,
                     "planner_outcome_contrast_shuffle_seed": int(
                         cfg.get("shuffle_seed", 0)

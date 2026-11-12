@@ -49,8 +49,14 @@ class SippoActorRolloutRefWorker(ActorRolloutRefWorker):
         def average() -> None:
             world = torch.distributed.get_world_size()
             for parameter in module.parameters():
-                if parameter.grad is None:
-                    parameter.grad = torch.zeros_like(parameter)
+                grad = parameter.grad
+                if grad is None:
+                    grad = torch.zeros_like(parameter)
+                elif grad.dtype != parameter.dtype or grad.device != parameter.device:
+                    # under no_sync FSDP leaves the low-precision (bf16) gradient in place; the optimizer needs the
+                    # parameter dtype (fp32 master weights), as the synchronising backward would have produced
+                    grad = grad.to(device=parameter.device, dtype=parameter.dtype)
+                parameter.grad = grad
                 torch.distributed.all_reduce(parameter.grad, op=torch.distributed.ReduceOp.SUM)
                 parameter.grad.div_(world)
         return average

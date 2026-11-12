@@ -101,6 +101,11 @@ def main() -> None:
         if "P_" not in src:
             raise SystemExit("--arm NRPSC must start from the P command (it overrides the PSC keys)")
         nr_weight = sys.argv[sys.argv.index("--nrpsc-weight") + 1] if "--nrpsc-weight" in sys.argv else "0.02"
+        # Tie-break weight is OFF (0.0) by default: identical behaviour to before this flag existed. It is a
+        # separate scalar from --nrpsc-weight, applied only to class pairs where the primary EM comparison ties
+        # (most of all, the all-fail questions where EM gives the main objective no Planner signal at all); see
+        # verl/trainer/ppo/nrpsc_objective.py: construct_node_pairs.
+        tiebreak_weight = sys.argv[sys.argv.index("--nrpsc-tiebreak-weight") + 1] if "--nrpsc-tiebreak-weight" in sys.argv else "0.0"
         batch_q = sys.argv[sys.argv.index("--batch") + 1] if "--batch" in sys.argv else None
         nr = {
             "algorithm.planner_outcome_contrast.mode": "nrpsc",
@@ -112,6 +117,7 @@ def main() -> None:
             "algorithm.planner_outcome_contrast.nrpsc_idf_sha256": NRPSC_IDF_SHA256,
             "algorithm.planner_outcome_contrast.nrpsc_similarity_threshold": "0.8",
             "algorithm.planner_outcome_contrast.nrpsc_replay_budget": "0",
+            "algorithm.planner_outcome_contrast.nrpsc_tiebreak_weight": tiebreak_weight,
             "qa_manager.workflow_rollout_n": "8",
         }
         if batch_q:

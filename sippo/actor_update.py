@@ -39,6 +39,7 @@ from verl.trainer.ppo.nrpsc_objective import (
 from verl.trainer.ppo.workflow_dag_opsd_grpo import build_question_preserving_minibatch_indices
 from sippo.r_control import build_planner_pointwise_rloo_coefficients
 from verl.utils.attention_utils import index_first_axis, pad_input, rearrange, unpad_input
+from verl.utils.device import get_device_id, get_device_name
 from verl.utils.seqlen_balancing import rearrange_micro_batches, restore_dynamic_batch
 from verl.utils.torch_functional import logprobs_from_logits, masked_mean
 
@@ -304,11 +305,20 @@ class SippoPolicyUpdater:
         return sparse
 
     @staticmethod
+    def _collective_device():
+        """Device for the tiny count tensors of ``all_reduce``: CPU when gloo handles CPU tensors (plain gloo, or the
+        ``cpu:gloo,npu:hccl`` mapping verl uses), otherwise the current accelerator, because a pure HCCL/NCCL group cannot
+        reduce a CPU tensor."""
+        if "gloo" in str(torch.distributed.get_backend()):
+            return "cpu"
+        return torch.device(get_device_name(), get_device_id())
+
+    @staticmethod
     def _allreduce_sum(values: list[float]) -> list[float]:
         """SUM all-reduce of small non-negative counts; identity on one rank (HCCL has no float64)."""
         if not torch.distributed.is_initialized() or torch.distributed.get_world_size() == 1:
             return values
-        t = torch.tensor(values, dtype=torch.float32, device="cpu" if torch.distributed.get_backend() == "gloo" else None)
+        t = torch.tensor(values, dtype=torch.float32, device=SippoPolicyUpdater._collective_device())
         torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.SUM)
         return [float(x) for x in t.tolist()]
 
@@ -333,12 +343,21 @@ class SippoPolicyUpdater:
             successes = int(non_tensors["nrpsc_successes"][row]) if "nrpsc_successes" in non_tensors else int(outcome)
             trials = int(non_tensors["nrpsc_trials"][row]) if "nrpsc_trials" in non_tensors else 1
             eligible = eligibility is None or outcome == 0 or bool(eligibility[row])
+            # Secondary (tie-break) outcome: None unless the rollout marked this row's answer-vs-retrieval check
+            # usable (binary and question-contains-answer rows are excluded there). trials is always 1 (one
+            # workflow, one check); only fires when the primary EM comparison between two classes is an exact tie.
+            if non_tensors.get("nrpsc_tiebreak_usable") is not None and bool(non_tensors["nrpsc_tiebreak_usable"][row]):
+                secondary_successes, secondary_trials = int(bool(non_tensors["nrpsc_tiebreak_hit"][row])), 1
+            else:
+                secondary_successes, secondary_trials = None, None
             trajectory = non_tensors["trajectory_id"][row]
             if trajectory in representatives:
                 previous = representatives[trajectory]
                 original = previous.row
                 if (previous.question != non_tensors["uid"][row] or previous.successes != successes
                         or previous.trials != trials or previous.eligible != eligible
+                        or previous.secondary_successes != secondary_successes
+                        or previous.secondary_trials != secondary_trials
                         or previous.view.response_ids != view.response_ids
                         or previous.view.prompt_ids != view.prompt_ids
                         or not torch.equal(tensors["response_mask"][original], tensors["response_mask"][row])
@@ -346,7 +365,8 @@ class SippoPolicyUpdater:
                     raise ValueError("duplicate NR-PSC Planner rows disagree")
                 duplicate_rows[trajectory].append(int(row))
                 continue
-            observation = PlanObservation(non_tensors["uid"][row], int(row), view, successes, trials, eligible)
+            observation = PlanObservation(non_tensors["uid"][row], int(row), view, successes, trials, eligible,
+                                          secondary_successes, secondary_trials)
             representatives[trajectory] = observation
             duplicate_rows[trajectory] = [int(row)]
             observations.append(observation)
@@ -357,6 +377,7 @@ class SippoPolicyUpdater:
             current, tensors["response_mask"].cpu(), observations, scorer,
             float(meta["nrpsc_similarity_threshold"]), question_count=max(questions, 1), beta=beta,
             reliability=FrozenReliabilityTable(table) if table else None,
+            tiebreak_weight=float(meta.get("nrpsc_tiebreak_weight", 0.0)),
         )
         for trajectory, rows in duplicate_rows.items():
             if len(rows) > 1:
@@ -522,6 +543,20 @@ class SippoPolicyUpdater:
             out["aux/planner_control/aux_to_planner_base_grad_ratio"] = float(matched / base) if base > 0 else 0.0
         return r_coef * scale_c, out
 
+    def _dump_optimizer_diag(self) -> None:
+        """Write dtype/device of parameters, gradients and optimizer state (first parameters) for post-mortem."""
+        import os as _os
+
+        rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        path = _os.environ.get("SIPPO_DIAG_FILE", f"/tmp/sippo_opt_diag_rank{rank}.txt")
+        with open(path, "w") as handle:
+            for index, parameter in enumerate(self.optimizer.param_groups[0]["params"][:8]):
+                state = {k: (str(v.dtype), str(v.device)) for k, v in self.optimizer.state.get(parameter, {}).items()
+                         if isinstance(v, torch.Tensor)}
+                grad = parameter.grad
+                handle.write(f"param[{index}] {tuple(parameter.shape)} {parameter.dtype} {parameter.device} | "
+                             f"grad {None if grad is None else (grad.dtype, grad.device)} | state {state}\n")
+
     # ---- the update -----------------------------------------------------------------------------------------------
     def update(self, tensors: dict[str, torch.Tensor], non_tensors: dict[str, np.ndarray], meta: dict[str, Any]) -> dict[str, list]:
         cfg = self.cfg
@@ -650,7 +685,11 @@ class SippoPolicyUpdater:
             if self._dp_size > 1:
                 self._allreduce_grads()
             if self._optimizer_step_fn is not None:
-                grad_norm = torch.tensor(float(self._optimizer_step_fn()))
+                try:
+                    grad_norm = torch.tensor(float(self._optimizer_step_fn()))
+                except RuntimeError:
+                    self._dump_optimizer_diag()
+                    raise
             else:
                 grad_norm = self._clip(self.model, cfg.grad_clip)
                 if hasattr(grad_norm, "full_tensor"):

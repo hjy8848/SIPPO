@@ -131,6 +131,8 @@ class SippoRayPPOTrainer(WorkflowRolloutMixin, RayPPOTrainer):
         poc_mode = str(poc.get("mode", "off")).lower()
         if poc_mode == "nrpsc" and int(poc.get("nrpsc_replay_budget", 0)) != 0:
             raise NotImplementedError("NPU NR-PSC n=8 baseline requires replay budget zero")
+        if poc_mode == "nrpsc" and float(poc.get("nrpsc_tiebreak_weight", 0.0)) < 0:
+            raise ValueError("algorithm.planner_outcome_contrast.nrpsc_tiebreak_weight must be non-negative")
         if aux_mode != "off" and poc_mode not in {"off", "false", "none"}:
             raise ValueError("R control (planner_aux_control) and PSC (planner_outcome_contrast.mode) are separate arms")
         for audit in ("gradient_audit", "coverage_audit_only", "current_policy_audit_only", "paired_shuffled_audit"):
