@@ -413,7 +413,7 @@ class vLLMColocateWorkerExtension:
                     f"loaded_params: {len(param_updates)}, loaded_buffers: {loaded_buffers}"
                 )
 
-    def _get_zmq_handle(self) -> str:
+    def _get_zmq_handle(self) -> str:  # see _zmq_run_token: the Ray job id alone is NOT unique across independent clusters
         """Get ZMQ handle for communication.
 
         Uses Ray job id + replica_rank + rollout-local rank to match the sender
@@ -428,7 +428,7 @@ class vLLMColocateWorkerExtension:
         local_rank = _resolve_vllm_weight_sync_local_rank(self.local_rank, parallel_config)
         trainer_rank_base = os.environ.get("VERL_ZMQ_BASE_TRAINER_RANK")
         trainer_rank = int(trainer_rank_base) + local_rank if trainer_rank_base is not None else local_rank
-        return f"ipc:///tmp/rl-colocate-zmq-{job_id}-replica-{replica_rank}-rank-{trainer_rank}.sock"
+        return f"ipc:///tmp/rl-colocate-zmq-{_zmq_run_token()}-{job_id}-replica-{replica_rank}-rank-{trainer_rank}.sock"
 
     def update_verl_delta_weights(self, update_info: dict) -> None:
         """Add this worker's IPC endpoint and forward the delta update to vLLM."""
@@ -571,3 +571,16 @@ def extract_prompt_logprobs(output: RequestOutput, num_prompt_logprobs: Optional
 
     result_dict["prompt_ids"] = prompt_ids_ls
     result_dict["prompt_logprobs"] = prompt_logprobs_ls
+
+def _zmq_run_token() -> str:
+    """Per-run token for the trainer->vLLM weight-sync IPC path.
+
+    The Ray job id is "01000000" for the first job of *every* independent Ray cluster, so two verl runs on one host
+    (each with its own local cluster) produced identical /tmp socket paths and could hand one run's weights to the
+    other run's vLLM. RAY_TMPDIR is set per run by the launcher and inherited by every Ray worker and vLLM process,
+    so both sides of the transfer derive the same token while different runs get different ones.
+    """
+    import hashlib
+    import os
+
+    return hashlib.sha1(os.environ.get("RAY_TMPDIR", "").encode()).hexdigest()[:10]

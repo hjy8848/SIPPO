@@ -33,26 +33,6 @@ def compute_actor_data_parallel_size(
     return world_size // ulysses_sequence_parallel_size
 
 
-def validate_linear_full_trajectory_minibatches(
-    trajectory_ids: np.ndarray, mini_batch_size: int
-) -> int:
-    """Validate one-row-per-workflow batching and return minibatch count."""
-
-    ids = np.asarray(trajectory_ids, dtype=object)
-    if ids.ndim != 1 or ids.size < 1:
-        raise ValueError("linear trajectory ids must be a non-empty rank-1 array")
-    if mini_batch_size < 1:
-        raise ValueError("linear PPO minibatch size must be positive")
-    if len(set(ids.tolist())) != ids.size:
-        raise ValueError("a linear workflow appears in more than one row")
-    if ids.size % mini_batch_size != 0:
-        raise ValueError(
-            f"{ids.size} linear workflows are not divisible by PPO minibatch size "
-            f"{mini_batch_size}"
-        )
-    return int(ids.size // mini_batch_size)
-
-
 def build_complete_workflow_minibatch_indices(
     trajectory_ids: np.ndarray,
     workflows_per_minibatch: int,

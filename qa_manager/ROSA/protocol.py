@@ -261,6 +261,163 @@ Rules:
 """
 
 
+# ==================== Subgoal Plan v1 (qa_manager.plan_format=subgoal) ====================
+# The Planner only decomposes the question into dependent sub-questions; whether a step is answered by retrieval or
+# from earlier answers is decided at execution time (see sippo/workflow_rollout.py, subgoal executor).
+
+SUBGOAL_PLANNER_RULES = """Decompose the question into a plan of sub-questions.
+
+Use only this node type inside one <plan>...</plan> block:
+<step id="INTEGER">{CONCRETE_SUBQUESTION}</step>
+
+The braced uppercase string above is a grammar metavariable. Replace it with
+question-specific content; never copy a metavariable or an instruction phrase
+into the plan.
+
+Rules:
+- IDs start at 1 and increase by 1.
+- Each step is one concrete, answerable sub-question: either a single fact to
+  look up, or a comparison, computation, intersection, or selection over earlier
+  answers. Never write a vague instruction such as "analyze the results".
+- Refer to an earlier step's answer with #ID#. A step may use several earlier
+  steps; steps that do not need an earlier answer must not reference one.
+- The last step must directly answer the original question. Do not add a step
+  that only summarizes earlier steps.
+- Never reference a future step.
+- Output exactly one <plan>...</plan> block and nothing else.
+"""
+
+SUBGOAL_PLANNER_BASE_SYSTEM_MSG = SUBGOAL_PLANNER_RULES + """
+Example:
+Question: Who is the father of Ada Lovelace's husband?
+<plan>
+<step id="1">Who was Ada Lovelace's husband?</step>
+<step id="2">Who was the father of #1#?</step>
+</plan>
+
+Example:
+Question: Who was born earlier, Alan Turing or John von Neumann?
+<plan>
+<step id="1">When was Alan Turing born?</step>
+<step id="2">When was John von Neumann born?</step>
+<step id="3">Who was born earlier, Alan Turing (born #1#) or John von Neumann (born #2#)?</step>
+</plan>
+"""
+
+
+def build_subgoal_planner_system_message(max_nodes: int = 5) -> str:
+    message = SUBGOAL_PLANNER_BASE_SYSTEM_MSG.rstrip()
+    if max_nodes > 0:
+        message += (
+            "\n\nAdditional execution constraints enforced by the runtime:\n"
+            f"- Use at most {max_nodes} steps."
+        )
+    return message + "\n"
+
+
+def build_subgoal_planning_messages(question: str, max_nodes: int = 5) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": build_subgoal_planner_system_message(max_nodes)},
+        {"role": "user", "content": f"Question: {question}\nGenerate the execution plan."},
+    ]
+
+
+# Execution-time routing for a step that depends on earlier steps. It reuses the ReasonerAgent role: the reasoner
+# either answers from the earlier answers alone or declares that a new external fact is needed (then the step is
+# retrieved). Steps without dependencies have no earlier answers to use and always go to retrieval.
+SUBGOAL_ROUTE_SYSTEM_MSG = """Answer the current sub-question using only the known facts, if they are enough.
+
+Output exactly one of these XML forms:
+<conclusion>{DERIVED_SHORT_ANSWER}</conclusion>
+<need_search/>
+
+Rules:
+- Use <conclusion> only when the known facts alone fully determine the answer,
+  for example a comparison, computation, intersection, or selection over them.
+- Use <need_search/> when answering requires any fact that is not stated in the
+  known facts. Never answer such a sub-question from memory.
+- Replace the braced metavariable; an ellipsis or instruction phrase is invalid.
+- Do not explain.
+"""
+
+NEED_SEARCH_RE = re.compile(r"\s*<need_search\s*/?>\s*(?:</need_search>\s*)?", re.IGNORECASE)
+
+
+def build_subgoal_route_messages(
+    subquestion: str,
+    known_facts: Sequence[tuple[str, str, str]],
+) -> list[dict[str, str]]:
+    """``known_facts``: ``(step_id, step_subquestion, step_answer)`` for every step referenced by the current one."""
+    lines = [f"**Current Sub-question**: {subquestion}", "", "**Known Facts**:"]
+    for step_id, step_text, step_answer in known_facts:
+        lines.append(f"#{step_id}# {step_text}\nAnswer: {step_answer}")
+    return [
+        {"role": "system", "content": SUBGOAL_ROUTE_SYSTEM_MSG},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def parse_subgoal_route(text: str) -> dict[str, Any]:
+    """Return ``{"is_valid", "route": "memory"|"search", "conclusion"}``."""
+    text = str(text or "")
+    if re.search(r"<(?:think|reasoning|reason_think)>", text, re.IGNORECASE):
+        return {"is_valid": False, "route": "search", "conclusion": "", "reason": "forbidden_thinking_block"}
+    if NEED_SEARCH_RE.fullmatch(text):
+        return {"is_valid": True, "route": "search", "conclusion": ""}
+    match = re.fullmatch(r"\s*<conclusion>(.*?)</conclusion>\s*", text, re.DOTALL | re.IGNORECASE)
+    conclusion = match.group(1).strip() if match else ""
+    if conclusion and not is_invalid_conclusion(conclusion):
+        return {"is_valid": True, "route": "memory", "conclusion": conclusion}
+    # Malformed output, or an "insufficient information" conclusion: fall back to retrieval (the safe default).
+    # Only a format violation counts as an invalid action; an explicit insufficiency is a legitimate search request.
+    return {"is_valid": bool(match), "route": "search", "conclusion": "",
+            "reason": "insufficient_conclusion" if match else "malformed_route"}
+
+
+SUBGOAL_FINAL_SYSTEM_MSG = """Give the final answer to the original question from the answer of its final sub-question.
+
+Rules:
+- Output only <answer>{SUPPORTED_FINAL_ANSWER}</answer>.
+- Replace the braced metavariable; an ellipsis or instruction phrase is invalid.
+- Keep the answer concise. If the answer is a name, date, location, number, or
+  yes/no, output only that value, phrased to fit the original question.
+- Use only the final sub-question's answer. Do not answer from memory.
+- Do not add explanations.
+"""
+
+
+def build_subgoal_final_messages(question: str, final_step: str, final_answer: str) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": SUBGOAL_FINAL_SYSTEM_MSG},
+        {
+            "role": "user",
+            "content": (
+                f"**Original Question**: {question}\n\n"
+                f"**Final Sub-question**: {final_step}\n"
+                f"**Final Sub-question Answer**: {final_answer}"
+            ),
+        },
+    ]
+
+
+def validate_subgoal_plan_semantics(question: str, nodes: Iterable[Any]) -> list[str]:
+    """Reject placeholder steps and root steps unrelated to the question."""
+    errors: list[str] = []
+    question_words = _content_words(question)
+    nodes = list(nodes)
+    for node in nodes:
+        _, node_id, text = _node_parts(node)
+        text = text.strip()
+        if is_degenerate_text(text):
+            errors.append(f"Step {node_id or '?'} contains placeholder or empty text.")
+            continue
+        if not has_reference(text) and question_words and not (_content_words(text) & question_words):
+            errors.append(f"Root step {node_id or '?'} is not grounded in the question.")
+    if nodes and all(has_reference(_node_parts(node)[2]) for node in nodes):
+        errors.append("Plan must contain at least one step without a reference.")
+    return errors
+
+
 def build_planning_messages(question: str, max_nodes: int = 5) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": build_planner_system_message(max_nodes)},

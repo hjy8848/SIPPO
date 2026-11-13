@@ -60,6 +60,10 @@ try:
         is_invalid_conclusion as is_invalid_protocol_conclusion,
         validate_plan_semantics,
         validate_plan_structure,
+        SUBGOAL_FINAL_SYSTEM_MSG,
+        build_subgoal_planner_system_message,
+        build_subgoal_planning_messages,
+        validate_subgoal_plan_semantics,
     )
 except ImportError as exc:
     if "find_reference_ids" not in str(exc):
@@ -162,7 +166,17 @@ class ROSA_AgentManager:
             "data.apply_chat_template_kwargs.enable_thinking",
             None,
         )
-        if self.contract_preserving_dag_v2:
+        self.plan_format = str(
+            safe_get(config, "qa_manager.plan_format", config.get("plan_format", "typed")) or "typed"
+        ).strip().lower()
+        if self.plan_format not in {"typed", "subgoal"}:
+            raise ValueError(f"qa_manager.plan_format must be typed or subgoal, got {self.plan_format!r}")
+        if self.plan_format == "subgoal" and self.contract_preserving_dag_v2:
+            raise ValueError("qa_manager.plan_format=subgoal is incompatible with contract_preserving_dag_v2")
+        if self.plan_format == "subgoal":
+            self.Prompts["PlanningAgent"] = build_subgoal_planner_system_message(self.planner_prompt_max_nodes)
+            self.Prompts["AnswerSummarizationAgent"] = SUBGOAL_FINAL_SYSTEM_MSG
+        elif self.contract_preserving_dag_v2:
             self.Prompts["PlanningAgent"] = build_contract_planner_system_message(
                 self.planner_prompt_max_nodes
             )
@@ -248,6 +262,9 @@ class ROSA_AgentManager:
             # args: (question: str)
             # 婵炴垶鎸堕崐婵單熸担绯曟灁? 闂佽浜介崕鏌ュ极瑜版帒绀嗛柛鈩冪懆椤妇绱撴担瑙勫鞍闁诲繐閺佸秶浠﹂崜褍闂佸湱椤箓鏌涢妸銉剶闁逞屽墮椤︿即鏁?planner prompt
             question = args[0]
+
+            if getattr(self, "plan_format", "typed") == "subgoal":
+                return build_subgoal_planning_messages(question, max_nodes=self.max_nodes_per_turn)
 
             if self.contract_preserving_dag_v2:
                 return [
@@ -393,6 +410,9 @@ class ROSA_AgentManager:
     ) -> Dict[str, Any]:
         """Parse a PlanningAgent response."""
         import re
+
+        if getattr(self, "plan_format", "typed") == "subgoal":
+            return self._parse_subgoal_planning_response(response, max_nodes=max_nodes, question=question)
 
         if getattr(self, "contract_preserving_dag_v2", False):
             return self._parse_contract_planning_response(
@@ -541,6 +561,43 @@ class ROSA_AgentManager:
             "raw_output": response,
             "nodes": nodes
         }
+
+    def _parse_subgoal_planning_response(self, response: str, *, max_nodes: int = 0, question: str = "") -> Dict[str, Any]:
+        """Parse a Subgoal Plan v1: one <plan> block of <step id="k">sub-question</step> nodes."""
+
+        def invalid(error, reason, nodes=None):
+            out = {"is_valid": False, "workflow": "", "error": error, "raw_output": response, "reason": reason}
+            if nodes is not None:
+                out["nodes"] = nodes
+            return out
+
+        plan_match = re.fullmatch(r'\s*<plan>(.*?)</plan>\s*', response, re.DOTALL | re.IGNORECASE)
+        if not plan_match:
+            return invalid("No <plan> tag found", "missing_plan_tag")
+        plan_content = plan_match.group(1)
+        steps = re.findall(r'<step\s+id="(\d+)"\s*>(.*?)</step>', plan_content, re.DOTALL | re.IGNORECASE)
+        if not steps:
+            return invalid("No valid <step> nodes found", "no_valid_nodes")
+        # Every tag in the block must belong to a well-formed step: no stray, nested, or typed (<search>/<reason>) nodes.
+        if len(re.findall(r'</?[a-zA-Z_]', plan_content)) != 2 * len(steps):
+            return invalid("Unexpected tags inside <plan>; only <step id=\"k\"> nodes are allowed", "illegal_tags")
+        leftover = re.sub(r'<step\s+id="\d+"\s*>.*?</step>', "", plan_content, flags=re.DOTALL | re.IGNORECASE)
+        if leftover.strip():
+            return invalid("Text outside <step> nodes inside <plan>", "text_outside_steps")
+        ids = [int(step_id) for step_id, _ in steps]
+        if ids != list(range(1, len(ids) + 1)):
+            return invalid(f"Step IDs must be 1, 2, ... in order, got: {ids}", "non_contiguous_node_ids")
+        nodes = []
+        for step_id, text in steps:
+            for ref_id in find_reference_ids(text):
+                if int(ref_id) >= int(step_id):
+                    return invalid(f"Step {step_id} references non-previous step #{ref_id}#", "future_or_self_reference")
+            nodes.append({"id": step_id, "type": "step", "task": text.strip()})
+        errors = validate_plan_structure(nodes, max_nodes=max_nodes)
+        errors += validate_subgoal_plan_semantics(question, nodes) if question else []
+        if errors:
+            return invalid("; ".join(errors), "invalid_plan", nodes)
+        return {"is_valid": True, "raw_output": response, "nodes": nodes}
 
     def _parse_contract_planning_response(
         self,

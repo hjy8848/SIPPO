@@ -1,2 +1,0 @@
-- name: linear_rosa
-  _target_: qa_manager.ROSA.linear_agent_loop.LinearRosaAgentLoop

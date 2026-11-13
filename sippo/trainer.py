@@ -27,7 +27,6 @@ from verl.trainer.ppo import core_algos
 from verl.trainer.ppo.nrpsc_objective import optional_psc_metadata
 from verl.trainer.ppo.metric_utils import compute_data_metrics
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer, compute_response_mask
-from verl.trainer.ppo.typed_selection_credit import ensure_typed_selection_metadata
 from verl.trainer.ppo.workflow_dag_opsd_grpo import (
     build_complete_question_dp_partitions,
     compute_actor_data_parallel_size,
@@ -238,7 +237,6 @@ class SippoRayPPOTrainer(WorkflowRolloutMixin, RayPPOTrainer):
                 metrics.update(train_reward_metrics)
                 for dataproto in batch_list:
                     dataproto.meta_info = {}
-                    ensure_typed_selection_metadata(dataproto.non_tensor_batch, dataproto.batch.batch_size[0])
                 original_len = len(batch_list)
                 batch_list[:] = [dp for dp in batch_list if dp.batch["prompts"][0].size()[0] == max_prompt_length]
                 if original_len - len(batch_list) > 0:
@@ -347,8 +345,15 @@ class SippoRayPPOTrainer(WorkflowRolloutMixin, RayPPOTrainer):
                     val_metrics = self.test_validate()
                     metrics.update(val_metrics)
 
-                if save_freq > 0 and (is_last_step or self.global_steps % save_freq == 0):
+                extra_save = {int(x) for x in os.environ.get("SIPPO_EXTRA_SAVE_STEPS", "").split(",") if x.strip()}
+                if save_freq > 0 and (is_last_step or self.global_steps % save_freq == 0 or self.global_steps in extra_save):
+                    # The rollout engines are awake here (update_weights woke them, validation used them). Gathering the
+                    # full state dict for hf_model on top of resident params + optimizer state + an awake vLLM does not
+                    # fit in HBM, so release vLLM first and re-sync it afterwards (weights are unchanged by saving).
+                    self.checkpoint_manager.sleep_replicas()
                     self._save_checkpoint()
+                    if not is_last_step:
+                        self.checkpoint_manager.update_weights(self.global_steps)
                 metrics.update(compute_data_metrics(batch=batch, use_critic=False))
                 tracker.log(data=metrics, step=self.global_steps)
                 progress_bar.update(1)

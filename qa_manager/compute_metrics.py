@@ -4,23 +4,6 @@ from collections import Counter
 
 import os
 
-def normalize_answer_final(answer):
-    # 如果 answer 是 list，把它合并成一个字符串
-    if isinstance(answer, list):
-        answer = ' '.join(answer)
-    
-    pre_answer = (
-        answer
-        .split('\n\n')[-1]
-        .split('Answer: ')[-1]
-        .split('The answer is: ')[-1]
-    )
-    final_answer = normalize_answer(pre_answer)
-    return final_answer
-
-def answer_post_refine(answer):
-    return answer.split("Answer: ")[-1]
-
 def compute_scores(predict_answers, golden_answers):
     assert len(predict_answers) == len(golden_answers), "预测答案和标准答案的长度不相等"
     

@@ -11,7 +11,7 @@ mkdir -p $R
 source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh >/dev/null 2>&1
 cd /tmp
 TORCH_DEVICE_BACKEND_AUTOLOAD=0 PYTHONPATH=$N $E/bin/python $N/sippo/build_args.py $H/${CMDFILE:-P_initial.cmd} $R/args.sh $R ${EXPPREFIX-NRPSC-}$TAG --memory-safe --steps $STEPS --seed $SEED --arm ${ARM:-NRPSC} $EXTRA > $R/build_args.log 2>&1 || { echo "build_args failed"; tail -5 $R/build_args.log; exit 2; }
-(cd $N && find sippo verl/trainer/ppo verl/workers/config verl/workers/actor_sippo verl/experimental/agent_loop qa_manager -name '*.py' | sort | xargs md5sum) > $R/code_manifest.md5
+(cd $N && find sippo verl/trainer/ppo verl/workers/config verl/experimental/agent_loop qa_manager -name '*.py' | sort | xargs md5sum) > $R/code_manifest.md5
 cat > $R/run.sh <<RUN
 #!/bin/bash
 N=$N

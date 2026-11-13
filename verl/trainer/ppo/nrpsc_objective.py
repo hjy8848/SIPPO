@@ -26,7 +26,9 @@ class PlanNode:
     end: int
 
 
-_NODE = re.compile(r'<(search|reason)\s+id="(\d+)"\s*>(.*?)</\1>', re.I | re.S)
+# "step" is the Subgoal Plan v1 node (qa_manager.plan_format=subgoal); typed plans use search/reason. Nodes only align
+# with nodes of the same kind, so the two formats are never mixed within one comparison.
+_NODE = re.compile(r'<(search|reason|step)\s+id="(\d+)"\s*>(.*?)</\1>', re.I | re.S)
 _REFERENCE = re.compile(r'#(\d+)#')
 _WORD = re.compile(r'[a-z0-9]+')
 
@@ -35,7 +37,7 @@ def optional_psc_metadata(metadata) -> list[str]:
     """Retain optional rollout metadata when constructing actor minibatches."""
     keys = ("psc_chosen_eligible", "contract_valid", "runtime_lineage_valid",
             "answer_sink_supported", "outcome_reward", "workflow_valid",
-            "nrpsc_tiebreak_usable", "nrpsc_tiebreak_hit")
+            "nrpsc_tiebreak_usable", "nrpsc_tiebreak_hit", "nrpsc_tiebreak_f1_decile")
     return [key for key in keys if key in metadata]
 
 
@@ -136,7 +138,7 @@ def load_frozen_tfidf(path: str) -> tuple[FrozenTfidf, str]:
 def parse_plan(text: str) -> tuple[PlanNode, ...]:
     """Parse supported nodes and reject malformed, forward or dangling edges."""
     matches = list(_NODE.finditer(text))
-    if not matches or len(re.findall(r'<(?:search|reason)\b', text, re.I)) != len(matches):
+    if not matches or len(re.findall(r'<(?:search|reason|step)\b', text, re.I)) != len(matches):
         raise ValueError("missing or malformed plan nodes")
     seen = set()
     result = []
@@ -249,39 +251,6 @@ def cluster_plan_observations(members: list[PlanObservation], similarity, thresh
         else:
             classes.append([member])
     return classes
-
-
-def select_replay_rows(observations: list[PlanObservation], similarity, threshold: float,
-                       budget: int) -> list[int]:
-    """Allocate one additional downstream run to classes with <2 observations.
-
-    Mixed-EM groups have priority; uniform groups require >=2 distinct classes.
-    The deterministic round-robin avoids consuming a whole budget on one group.
-    """
-    if budget < 0:
-        raise ValueError("negative replay budget")
-    questions = {}
-    for member in observations:
-        if member.eligible:
-            questions.setdefault(member.question, []).append(member)
-    buckets = [[], []]
-    for question in sorted(questions, key=str):
-        members = questions[question]
-        classes = cluster_plan_observations(members, similarity, threshold)
-        if len(classes) < 2:
-            continue
-        outcomes = {member.successes / member.trials for member in members}
-        priority = 0 if len(outcomes) > 1 else 1
-        candidates = [group[0].row for group in classes if sum(x.trials for x in group) < 2]
-        if candidates:
-            buckets[priority].append(candidates)
-    selected = []
-    for bucket in buckets:
-        while len(selected) < budget and any(bucket):
-            for candidates in bucket:
-                if candidates and len(selected) < budget:
-                    selected.append(candidates.pop(0))
-    return selected
 
 
 def construct_node_pairs(observations: list[PlanObservation], similarity, threshold: float,
@@ -408,26 +377,6 @@ def node_token_mask(offsets: list[tuple[int, int]], start: int, end: int) -> tor
     return torch.tensor(result, dtype=torch.bool)
 
 
-def planner_node_masks(tokenizer, response_ids: list[int]) -> tuple[tuple[PlanNode, ...], tuple[torch.Tensor, ...]]:
-    """Decode and align node spans only when token IDs round-trip exactly.
-
-    IDs and returned masks represent unpadded response tokens. A tokenizer
-    whose decoded text cannot be re-encoded exactly must not be used to infer
-    character-to-token correspondence.
-    """
-    text = tokenizer.decode(response_ids, skip_special_tokens=False,
-                            clean_up_tokenization_spaces=False)
-    encoding = tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
-    ids = list(encoding["input_ids"])
-    if ids != list(response_ids):
-        raise ValueError("response token IDs do not round-trip through tokenizer")
-    offsets = [(int(left), int(right)) for left, right in encoding["offset_mapping"]]
-    if len(offsets) != len(response_ids):
-        raise ValueError("tokenizer returned inconsistent offset count")
-    nodes = parse_plan(text)
-    return nodes, tuple(node_token_mask(offsets, node.start, node.end) for node in nodes)
-
-
 def planner_plan_view(tokenizer, prompt_ids: list[int], response_ids: list[int]) -> PlanView:
     """Construct one aligned Planner view, including closing-plan/EOS tokens."""
     text = tokenizer.decode(response_ids, skip_special_tokens=False,
@@ -482,13 +431,6 @@ def prepare_plan_views(tokenizer, responses: torch.Tensor, response_mask: torch.
             rows[row] = view
             counts['usable_rows'] += 1
     return rows, dict(counts)
-
-
-def global_question_scale(local_questions: int, global_questions: int, world_size: int) -> float:
-    """Scale a local all-question mean before distributed gradient averaging."""
-    if local_questions < 0 or global_questions < local_questions or world_size < 1:
-        raise ValueError("invalid distributed question counts")
-    return local_questions * world_size / global_questions if global_questions else 0.0
 
 
 def reward_eligibility_mask(em: torch.Tensor, reward: torch.Tensor,
@@ -628,20 +570,3 @@ def batch_node_coefficients(log_probs: torch.Tensor, response_mask: torch.Tensor
                                           beta=beta, candidate_counts=counts["candidate_counts"])
     return coeffs, counts
 
-
-def shared_prefix_masks(winner_ids: torch.Tensor, loser_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Remove only an exact shared token prefix; caller verifies identical prompt."""
-    if winner_ids.ndim != 1 or loser_ids.ndim != 1:
-        raise ValueError("expected unpadded token sequences")
-    length = min(len(winner_ids), len(loser_ids))
-    prefix = 0
-    while prefix < length and winner_ids[prefix].item() == loser_ids[prefix].item():
-        prefix += 1
-    win = torch.arange(len(winner_ids), device=winner_ids.device) >= prefix
-    lose = torch.arange(len(loser_ids), device=loser_ids.device) >= prefix
-    return win, lose
-
-
-def reward_eligible(em: float, reward: float, workflow_valid: bool) -> bool:
-    """A positive is eligible only when binary EM and actual reward agree."""
-    return bool(workflow_valid and em == 1.0 and reward >= 1.0)

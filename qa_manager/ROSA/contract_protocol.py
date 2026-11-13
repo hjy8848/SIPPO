@@ -116,13 +116,6 @@ def parse_contract_plan(text: str) -> dict[str, Any]:
     return {"attrs": plan_attrs, "nodes": nodes, "parse_error": ""}
 
 
-def contract_nodes_as_legacy(nodes: Sequence[Mapping[str, Any]]) -> list[tuple[str, str, str]]:
-    return [
-        (str(node.get("type", "")), str(node.get("id", "")), str(node.get("task", "")))
-        for node in nodes
-    ]
-
-
 def _comparison_dimension(question: str) -> tuple[str, tuple[str, ...]] | None:
     question = str(question or "").lower()
     dimensions = (

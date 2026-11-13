@@ -346,7 +346,15 @@ class SippoPolicyUpdater:
             # Secondary (tie-break) outcome: None unless the rollout marked this row's answer-vs-retrieval check
             # usable (binary and question-contains-answer rows are excluded there). trials is always 1 (one
             # workflow, one check); only fires when the primary EM comparison between two classes is an exact tie.
-            if non_tensors.get("nrpsc_tiebreak_usable") is not None and bool(non_tensors["nrpsc_tiebreak_usable"][row]):
+            tiebreak_source = str(meta.get("nrpsc_tiebreak_source", "retrieval"))
+            if tiebreak_source == "f1":
+                # final-answer token F1 on a 0..10 grid; defined for every workflow, so always usable
+                if non_tensors.get("nrpsc_tiebreak_f1_decile") is None:
+                    raise ValueError("nrpsc_tiebreak_source=f1 needs nrpsc_tiebreak_f1_decile from the rollout")
+                secondary_successes, secondary_trials = int(non_tensors["nrpsc_tiebreak_f1_decile"][row]), 10
+            elif tiebreak_source != "retrieval":
+                raise ValueError(f"unknown nrpsc_tiebreak_source {tiebreak_source!r}")
+            elif non_tensors.get("nrpsc_tiebreak_usable") is not None and bool(non_tensors["nrpsc_tiebreak_usable"][row]):
                 secondary_successes, secondary_trials = int(bool(non_tensors["nrpsc_tiebreak_hit"][row])), 1
             else:
                 secondary_successes, secondary_trials = None, None

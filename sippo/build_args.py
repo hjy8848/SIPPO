@@ -118,6 +118,8 @@ def main() -> None:
             "algorithm.planner_outcome_contrast.nrpsc_similarity_threshold": "0.8",
             "algorithm.planner_outcome_contrast.nrpsc_replay_budget": "0",
             "algorithm.planner_outcome_contrast.nrpsc_tiebreak_weight": tiebreak_weight,
+            "algorithm.planner_outcome_contrast.nrpsc_tiebreak_source": (
+                sys.argv[sys.argv.index("--nrpsc-tiebreak-source") + 1] if "--nrpsc-tiebreak-source" in sys.argv else "retrieval"),
             "qa_manager.workflow_rollout_n": "8",
         }
         if batch_q:
@@ -158,6 +160,12 @@ def main() -> None:
         ov.update(MEMORY_SAFE)
     if "--fast" in flags:
         ov.update(FAST)
+    if "--save-hf-only" in flags:  # HF weights only (~6 GB per save): evaluation copies, no resume state
+        ov["actor_rollout_ref.actor.checkpoint.save_contents"] = "[hf_model]"
+    if "--save-hf" in flags:  # weights only (no optimizer state): a HF copy for evaluation plus the FSDP model as backup
+        ov["actor_rollout_ref.actor.checkpoint.save_contents"] = "[model,hf_model]"
+    if "--subgoal" in flags:  # Subgoal Plan v1: <step> plans, execution-time search/memory routing (see sippo/workflow_rollout.py)
+        ov["qa_manager.plan_format"] = "subgoal"
     if "--gpus" in sys.argv:  # data parallel: one full model replica per card (fsdp_size=1), see sippo/worker.py
         gpus = int(sys.argv[sys.argv.index("--gpus") + 1])
         ov["trainer.n_gpus_per_node"] = str(gpus)

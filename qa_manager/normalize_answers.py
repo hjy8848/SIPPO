@@ -175,19 +175,3 @@ def normalize_answer(s: str, lowercase: bool = True) -> str:
     s = normalize(s)
     return white_space_fix(remove_articles(remove_punc(s)))
 
-
-def is_answer_in_text(text: str, answers: List[str]) -> bool:
-    """
-    Checks if any of the provided answers are present in the given text after normalization.
-    """
-    for a in answers:
-        normalized_answer_lower = normalize_answer(a, lowercase=True)
-        normalized_answer = normalize_answer(a, lowercase=False)
-        normalized_text = white_space_fix(remove_punc(text))
-
-        if (a in text or 
-            normalized_answer_lower in normalized_text or 
-            normalized_answer in normalized_text):
-            return True
-    
-    return False
